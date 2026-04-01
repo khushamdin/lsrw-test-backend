@@ -14,6 +14,8 @@ QUESTIONS = [
 
     # ─── LISTENING ────────────────────────────────────────────────────────────
 
+    # ─── LISTENING ────────────────────────────────────────────────────────────
+
     {
         "id": 1,
         "section": "listening",
@@ -173,21 +175,12 @@ QUESTIONS = [
     {
         "id": 15,
         "section": "speaking",
-        "type": "speech",
-        "question": "Write ONE sentence: what is the first thing you'd do if you found a chest on a beach?",
-        "hint": "Any confident, relevant sentence is fine. Express yourself!",
-        "feedback_correct": "Ekdum filmy jawab! 🎬",
-        "feedback_wrong": None   # Azure + Gemini will evaluate
-    },
-
-    {
-        "id": 16,
-        "section": "speaking",
-        "type": "speech",
-        "question": "Describe the island without using the words 'beautiful' or 'scary'.",
-        "hint": "Think of other vivid words to paint a picture of the island.",
-        "forbidden_words": ["beautiful", "scary"],
-        "feedback_wrong": None   # Azure + Gemini will evaluate
+        "type": "conversational_speech",
+        "question": "Hi! I'm Sam. How are you doing today? How was your day?",
+        "audio_script": "Hi! I'm Sam. How are you doing today? How was your day?",
+        "initial_message": "Hi! I'm Sam. How are you doing today? How was your day?",
+        "hint": "Try to answer in 1-2 friendly sentences!",
+        "feedback_wrong": None
     },
 
 ]

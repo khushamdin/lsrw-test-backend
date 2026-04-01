@@ -8,6 +8,8 @@ import os
 from db import get_db
 from questions.class_7 import QUESTIONS
 from services.evaluation_service import evaluate
+from services.gemini_service import generate_listening_chat_response, evaluate_listening_conversation
+from services.azure_service import transcribe_only, analyze_pronunciation, parse_result
 
 router = APIRouter()
 
@@ -26,7 +28,7 @@ def get_questions():
 
 
 @router.post("/start")
-def start(section: Optional[str] = None):
+def start(name: str = Form(...), section: Optional[str] = None):
     """Create a new session and return the first question, optionally filtered by section."""
     session_id = str(uuid.uuid4())
     
@@ -44,13 +46,13 @@ def start(section: Optional[str] = None):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO sessions (id, current_question, answers, scores, question_indices) VALUES (?, ?, ?, ?, ?)",
-        (session_id, 0, "[]", "[]", indices_json),
+        "INSERT INTO sessions (id, current_question, answers, scores, question_indices, student_name, chat_history, turn_metrics) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (session_id, 0, "[]", "[]", indices_json, name, "[]", "[]"),
     )
     conn.commit()
     conn.close()
 
-    first_q = _safe_question(QUESTIONS[indices[0]])
+    first_q = _safe_question(QUESTIONS[indices[0]], name=name)
     return {"session_id": session_id, "question": first_q, "total": len(indices)}
 
 
@@ -100,7 +102,87 @@ async def answer(
     # ── Route input to the right format per question type ─────────────────────
     qtype = question["type"]
 
-    if qtype == "speech":
+    if qtype == "conversational_speech":
+        if not file:
+            conn.close()
+            return {"error": "Audio file required for conversational listening"}
+
+        temp_path = os.path.join(TEMP_DIR, f"{session_id}_{file.filename}")
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # 1. Perform Pronunciation Assessment (Azure returns the transcript too!)
+        # We pass empty reference_text to allow it to transcribe freely
+        azure_raw = analyze_pronunciation(temp_path, reference_text="")
+        parsed = parse_result(azure_raw)
+        spoken = parsed["spoken"]
+        
+        # 2. Get history and student name
+        history = json.loads(session["chat_history"] or "[]")
+        name = session["student_name"] or "Student"
+        
+        if not history:
+             # Add the Sam's initial greeting if history is empty
+             history.append({"role": "model", "parts": [{"text": question["question"]}]})
+
+        # 3. Add current turn to history
+        history.append({"role": "user", "parts": [{"text": spoken}]})
+        
+        # 4. Generate AI response
+        ai_resp_data = generate_listening_chat_response(history, student_name=name)
+        ai_message = ai_resp_data["response"]
+        is_finished = ai_resp_data["is_finished"]
+        
+        # 5. Add AI response to history
+        history.append({"role": "model", "parts": [{"text": ai_message}]})
+        
+        turn_result = {
+            "spoken": spoken,
+            "ai_response": ai_message,
+            "accuracy": parsed["accuracy"],
+            "fluency": parsed["fluency"],
+            "finished": is_finished,
+            "score": 0 # Not a final score yet
+        }
+        
+        os.remove(temp_path)
+
+        # Update chat history and turn metrics in DB
+        metrics = json.loads(session["turn_metrics"] or "[]")
+        metrics.append({"accuracy": parsed["accuracy"], "fluency": parsed["fluency"]})
+
+        cursor.execute("UPDATE sessions SET chat_history=?, turn_metrics=? WHERE id=?", 
+                       (json.dumps(history), json.dumps(metrics), session_id))
+        
+        if not is_finished:
+            # Don't move to next question!
+            conn.commit()
+            conn.close()
+            return {
+                "done": False,
+                "result": turn_result,
+                "chat_response": ai_message, # Frontend can use this to update the Sammy's message
+                "is_turn_based": True,
+                "progress": {"current": current_idx_within_indices, "total": len(indices)}
+            }
+        else:
+            # Finalize this conversational question
+            avg_acc = sum(m["accuracy"] for m in metrics) / len(metrics) if metrics else 0
+            avg_flu = sum(m["fluency"] for m in metrics) / len(metrics) if metrics else 0
+
+            eval_result = evaluate_listening_conversation(history)
+            result = {
+                "score": eval_result["overall_score"],
+                "feedback": eval_result["feedback"],
+                "language_score": eval_result["language_score"],
+                "relevance_score": eval_result["relevance_score"],
+                "avg_accuracy": round(avg_acc, 1),
+                "avg_fluency": round(avg_flu, 1),
+                "spoken": spoken,
+                "history": history
+            }
+
+    elif qtype == "speech":
         if not file:
             conn.close()
             return {"error": "Audio file required for speech questions"}
@@ -147,7 +229,7 @@ async def answer(
     return {
         "done": False,
         "result": result,
-        "next_question": _safe_question(QUESTIONS[next_actual_q_index]),
+        "next_question": _safe_question(QUESTIONS[next_actual_q_index], name=session["student_name"]),
         "progress": {"current": next_idx_within_indices, "total": len(indices)},
     }
 
@@ -177,6 +259,13 @@ def get_session(session_id: str):
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _safe_question(q: dict) -> dict:
-    """Strip answer keys before sending to frontend."""
-    return {k: v for k, v in q.items() if k not in ("answer", "correct_version")}
+def _safe_question(q: dict, name: str = "") -> dict:
+    """Strip answer keys and personalize if needed."""
+    q_copy = {k: v for k, v in q.items() if k not in ("answer", "correct_version")}
+    
+    if q_copy.get("type") == "conversational_speech" and name:
+        msg = f"Hi {name}! I'm Sam. How are you doing today? How was your day?"
+        q_copy["question"] = msg
+        q_copy["audio_script"] = msg
+        
+    return q_copy

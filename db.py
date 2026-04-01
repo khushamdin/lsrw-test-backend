@@ -17,14 +17,28 @@ def init_db():
         current_question INTEGER,
         answers TEXT,
         scores TEXT,
-        question_indices TEXT
+        question_indices TEXT,
+        chat_history TEXT DEFAULT '[]',
+        student_name TEXT,
+        turn_metrics TEXT DEFAULT '[]'
     )
     """)
-    # Add column if it doesn't exist (for existing DBs)
+    # Add columns if they don't exist (for existing DBs)
     try:
-        cursor.execute("ALTER TABLE sessions ADD COLUMN question_indices TEXT")
+        cursor.execute("ALTER TABLE sessions ADD COLUMN chat_history TEXT DEFAULT '[]'")
+    except:
+        pass # Column already exists
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN student_name TEXT")
+    except:
+        pass # Column already exists
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN turn_metrics TEXT DEFAULT '[]'")
     except:
         pass # Column already exists
 
     conn.commit()
     conn.close()
+
+
+

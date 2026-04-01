@@ -21,73 +21,6 @@ def _safe_parse(text: str, fallback: dict) -> dict:
         return json.loads(clean)
     except Exception:
         return fallback
-def generate_speaking_guide_message(
-    question: str,
-    task: str,
-    hint: str = "",
-    forbidden_words: list = None,
-    previous_spoken: str = None,
-    previous_feedback: str = None,
-) -> str:
-    """
-    Generates a short, warm, conversational guide message for the current
-    speaking step. Called BEFORE the student records.
- 
-    task:
-      "line1"   → introduce the question, ask for first sentence
-      "line2"   → react to what they said, ask for second sentence
-      "combine" → react to both lines, ask them to say the full answer together
- 
-    Returns a plain string (1-3 sentences max). No JSON.
-    """
-    forbidden_note = (
-        f"Remind them they cannot use the words: {forbidden_words}. "
-        if forbidden_words else ""
-    )
- 
-    previous_context = ""
-    if previous_spoken:
-        previous_context += f'\nThe student just said: "{previous_spoken}"'
-    if previous_feedback:
-        previous_context += f'\nYour last feedback to them was: "{previous_feedback}"'
- 
-    task_instruction = {
-        "line1": (
-            "Introduce the speaking task warmly. Ask the student to say just ONE sentence "
-            "in response to the question. Keep it encouraging and low-pressure."
-        ),
-        "line2": (
-            "React naturally to what the student just said (refer to it briefly). "
-            "Then ask them to add ONE more sentence — a detail, reason, or what happens next. "
-            "Be warm and specific to what they said."
-        ),
-        "combine": (
-            "Celebrate that they've said both parts. Now ask them to say BOTH sentences "
-            "together as one smooth, flowing answer. Be encouraging and specific — "
-            "maybe mention something good from their previous attempts."
-        ),
-    }.get(task, "Ask the student to speak one sentence.")
- 
-    prompt = f"""You are a friendly, encouraging English tutor for a Class 7 student (age 12-13).
-You are guiding them through a speaking exercise in a chat-style conversation.
- 
-Speaking question: {question}
-Current step: {task}
-Hint available for student: {hint}
-{forbidden_note}{previous_context}
- 
-Your job now: {task_instruction}
- 
-Rules:
-- Write ONLY the message you'd send to the student. No labels, no JSON, no quotes around it.
-- Max 2-3 sentences. Be natural, warm, conversational — like a cool tutor, not a robot.
-- Use 1 emoji max. Do not be over-the-top enthusiastic.
-- If task is "line2" or "combine", specifically reference what they said before.
-- Do NOT include the hint text verbatim — just guide them naturally.
-"""
- 
-    res = model.generate_content(prompt)
-    return res.text.strip()
 
 # ── Used for `speech` questions ───────────────────────────────────────────────
 def evaluate_speech_answer(question: str, spoken: str, accuracy: float, fluency: float,
@@ -186,3 +119,69 @@ Respond ONLY with valid JSON (no markdown):
 """
     res = model.generate_content(prompt)
     return _safe_parse(res.text, {"score": 50, "is_correct": False, "feedback": "Nice try, check the verb tense!"})
+
+# ── Conversational Listening ──────────────────────────────────────────────────
+
+def generate_listening_chat_response(history: list, student_name: str = "there") -> dict:
+    """
+    Generates the next AI response in a conversational listening assessment.
+    history: list of {"role": "user"|"model", "content": str}
+    Returns: {"response": str, "is_finished": bool}
+    """
+    prompt = f"""
+You are Sam, a friendly and warm AI tutor for kids (age 12). 
+You are conducting a conversational English Speaking assessment.
+The student's name is {student_name}.
+
+Conversation history:
+{json.dumps(history, indent=2)}
+
+Rules for Sam's response:
+1. React warmly and naturally to what the student said in the last interaction. 
+2. If the kid was sad or had a bad day, show genuine empathy.
+3. Then, bridge to a fun/engaging follow-up question.
+4. Topics should be simple: favorite food, superpowers, hobbies, animals, movies, or cartoons.
+5. Keep your response between 15-30 words.
+6. Use 1 emoji. 
+
+Ending the conversation:
+- We want at least 3 high-quality turns (user answered 3 times).
+- Count how many times the student (role: user) has spoken in the history above.
+- If they have spoken 3 or 4 times, set 'is_finished' to true and say a sweet goodbye like "It was so wonderful chatting with you, {student_name}! Have a great day!".
+- If they have spoken less than 3 times, keep the conversation going and set 'is_finished' to false.
+
+Respond ONLY with valid JSON:
+{{
+  "response": "<Sam's response>",
+  "is_finished": <true or false>
+}}
+"""
+    res = model.generate_content(prompt)
+    return _safe_parse(res.text, {"response": "That's great! Tell me, what is your favorite cartoon?", "is_finished": False})
+
+
+def evaluate_listening_conversation(history: list) -> dict:
+    """
+    Final evaluation of the entire listening conversation.
+    """
+    prompt = f"""
+You are a friendly English evaluator. Evaluate this conversation between a student and an AI tutor 'Sam'.
+Look for:
+1. Did the student understand Sam's questions?
+2. Did they respond relevantly?
+3. Grammar and vocabulary for a Class 7 student.
+4. Provide constructive feedback on what they did well and ONE specific tip for improvement.
+
+Conversation history:
+{json.dumps(history, indent=2)}
+
+Respond ONLY with valid JSON:
+{{
+  "language_score": <0-100>,
+  "relevance_score": <0-100>,
+  "feedback": "<constructive feedback for improvement, max 25 words>",
+  "overall_score": <0-100>
+}}
+"""
+    res = model.generate_content(prompt)
+    return _safe_parse(res.text, {"language_score": 75, "relevance_score": 75, "feedback": "Great chatting with you! You did well.", "overall_score": 75})
