@@ -10,6 +10,7 @@ Question types and their scoring logic:
   open_text      → Gemini language quality scorer                  → score 0-100
   speech         → Azure pronunciation (accuracy + fluency)
                    + Gemini relevance & language quality           → composite 0-100
+  conversational_writing → Turn-based writing conversation with AI feedback
 """
 
 from services.azure_service import analyze_pronunciation, parse_result, transcribe_only
@@ -17,6 +18,8 @@ from services.gemini_service import (
     evaluate_speech_answer,
     evaluate_open_text,
     evaluate_rewrite,
+    generate_writing_chat_response,
+    evaluate_writing_conversation,
 )
 
 
@@ -33,7 +36,7 @@ def _norm(s: str) -> str:
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def evaluate(question: dict, input_data) -> dict:
+def evaluate(question: dict, input_data, conversation_history=None) -> dict:
     """
     Args:
         question  – a question dict from QUESTIONS
@@ -43,8 +46,11 @@ def evaluate(question: dict, input_data) -> dict:
             sentence_build       → str   (the assembled sentence)
             rewrite / open_text  → str   (typed answer)
             speech               → str   (file path to the audio file)
+            conversational_writing → str (typed message in conversation)
+        conversation_history – list of chat turns for conversational types
 
     Returns a dict always containing at least: { score, feedback }
+    For conversational types, may also return: { is_turn_based, chat_response, is_finished }
     """
 
     qtype = question["type"]
@@ -117,11 +123,67 @@ def evaluate(question: dict, input_data) -> dict:
 
     # ── OPEN TEXT ─────────────────────────────────────────────────────────────
     elif qtype == "open_text":
-        gemini = evaluate_open_text(question["question"], input_data)
+        gemini = evaluate_open_text(
+            question["question"], 
+            input_data, 
+            context=question.get("image_description")
+        )
         return {
             "score": gemini["language_score"],
             "feedback": gemini["feedback"],
         }
+
+    # ── CONVERSATIONAL WRITING ────────────────────────────────────────────────
+    elif qtype == "conversational_writing":
+        """
+        Turn-based writing conversation:
+        1. Student writes a response
+        2. AI gives gentle feedback + follow-up question
+        3. After 2 turns, evaluate and finish
+        """
+        if conversation_history is None:
+            conversation_history = []
+        
+        # Add student's message to history
+        conversation_history.append({
+            "role": "user",
+            "parts": [{"text": input_data}]
+        })
+        
+        # Generate AI response with feedback and follow-up
+        ai_response = generate_writing_chat_response(
+            history=conversation_history,
+            image_description=question.get("image_description")
+        )
+        
+        # Add AI response to history
+        conversation_history.append({
+            "role": "model",
+            "parts": [{"text": ai_response["response"]}]
+        })
+        
+        # If conversation is finished, evaluate it
+        if ai_response.get("is_finished"):
+            final_eval = evaluate_writing_conversation(
+                history=conversation_history,
+                image_description=question.get("image_description")
+            )
+            return {
+                "score": final_eval["overall_score"],
+                "feedback": final_eval["feedback"],
+                "language_score": final_eval["language_score"],
+                "relevance_score": final_eval["relevance_score"],
+                "conversation_history": conversation_history,
+            }
+        else:
+            # Mid-conversation: return the AI's response for display
+            return {
+                "score": 0,  # No score yet
+                "is_turn_based": True,
+                "chat_response": ai_response["response"],
+                "is_finished": False,
+                "conversation_history": conversation_history,
+            }
 
     # ── SPEECH ────────────────────────────────────────────────────────────────
     elif qtype == "speech":

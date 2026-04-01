@@ -1,6 +1,7 @@
 import google.generativeai as genai
 import json
 import os
+import re
 from dotenv import load_dotenv
 
 # Load from .env if present
@@ -15,10 +16,28 @@ model = genai.GenerativeModel("gemini-2.5-flash")
 
 
 def _safe_parse(text: str, fallback: dict) -> dict:
-    """Strip markdown fences and parse JSON, returning fallback on failure."""
+    """JSON parse with block stripping and robustness."""
     try:
-        clean = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        return json.loads(clean)
+        # Try to find JSON block
+        match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+        if match:
+             return json.loads(match.group(1))
+        
+        # Try to find generic code block
+        match = re.search(r"```\s*(.*?)\s*```", text, re.DOTALL)
+        if match:
+             return json.loads(match.group(1))
+        
+        # Try to parse the text directly (perhaps AI didn't use blocks)
+        try:
+            return json.loads(text.strip())
+        except:
+            # Last ditch effort: find anything between curly braces
+            match = re.search(r"(\{.*\})", text, re.DOTALL)
+            if match:
+                return json.loads(match.group(1))
+            raise Exception("No JSON found")
+
     except Exception:
         return fallback
 
@@ -69,20 +88,22 @@ Respond ONLY with valid JSON (no markdown):
     })
 
 
-# ── Used for `open_text` questions ────────────────────────────────────────────
-def evaluate_open_text(question: str, answer: str) -> dict:
+def evaluate_open_text(question: str, answer: str, context: str = None) -> dict:
     """
     Evaluates a written creative / open-ended answer.
     Returns: { language_score: 0-100, feedback: str }
     """
+    context_note = f"\nAdditional Context (e.g. image they are describing): {context}" if context else ""
+    
     prompt = f"""
 You are a friendly English tutor evaluating a Class 7 student's written response.
 
-Question: {question}
+Question: {question}{context_note}
 Student wrote: {answer}
 
 Score the response on:
 - language_score (0-100): grammar, vocabulary, sentence formation
+- Relevance to the question/context.
 - Creativity and relevance don't need to be penalised harshly for a kid.
 
 Respond ONLY with valid JSON (no markdown):
@@ -96,20 +117,22 @@ Respond ONLY with valid JSON (no markdown):
 
 
 # ── Used for `rewrite` questions ──────────────────────────────────────────────
+
 def evaluate_rewrite(original: str, correct_version: str, student_answer: str) -> dict:
     """
-    Checks if the student correctly rewrote a sentence.
-    Returns: { score: 0-100, is_correct: bool, feedback: str }
+    Evaluates a grammatical rewrite task.
+    Returns: { score, is_correct, feedback }
     """
     prompt = f"""
-You are an English grammar checker for Class 7 students.
+You are a friendly English tutor evaluating a Class 7 student.
+Task: The student had to rewrite a grammatically incorrect sentence correctly.
 
-Original (incorrect) sentence: {original}
+Original sentence (errors): {original}
 Expected correction: {correct_version}
 Student's rewrite: {student_answer}
-
+ 
 Check if the student fixed the grammatical error(s). Minor spelling variations are acceptable.
-
+ 
 Respond ONLY with valid JSON (no markdown):
 {{
   "score": <0, 50, or 100>,
@@ -125,7 +148,7 @@ Respond ONLY with valid JSON (no markdown):
 def generate_listening_chat_response(history: list, student_name: str = "there") -> dict:
     """
     Generates the next AI response in a conversational listening assessment.
-    history: list of {"role": "user"|"model", "content": str}
+    history: list of {"role": "user"|"model", "parts": [{"text": str}]}
     Returns: {"response": str, "is_finished": bool}
     """
     prompt = f"""
@@ -136,52 +159,113 @@ The student's name is {student_name}.
 Conversation history:
 {json.dumps(history, indent=2)}
 
-Rules for Sam's response:
-1. React warmly and naturally to what the student said in the last interaction. 
-2. If the kid was sad or had a bad day, show genuine empathy.
-3. Then, bridge to a fun/engaging follow-up question.
-4. Topics should be simple: favorite food, superpowers, hobbies, animals, movies, or cartoons.
-5. Keep your response between 15-30 words.
-6. Use 1 emoji. 
-
-Ending the conversation:
-- We want at least 3 high-quality turns (user answered 3 times).
-- Count how many times the student (role: user) has spoken in the history above.
-- If they have spoken 3 or 4 times, set 'is_finished' to true and say a sweet goodbye like "It was so wonderful chatting with you, {student_name}! Have a great day!".
-- If they have spoken less than 3 times, keep the conversation going and set 'is_finished' to false.
+Task:
+1. Respond naturally and briefly to the student's last message.
+2. If this is the 1st or 2nd turn, ask one more engaging follow-up question.
+3. If this is the 3rd turn (total 3 user messages), end the conversation politely.
+4. Keep your response short and sweet (max 30 words).
 
 Respond ONLY with valid JSON:
 {{
-  "response": "<Sam's response>",
-  "is_finished": <true or false>
+  "response": "<Your response here>",
+  "is_finished": <true if this was the 3rd user turn, else false>
 }}
 """
     res = model.generate_content(prompt)
-    return _safe_parse(res.text, {"response": "That's great! Tell me, what is your favorite cartoon?", "is_finished": False})
+    return _safe_parse(res.text, {"response": "Nice talking to you! Let's move on.", "is_finished": True})
 
 
 def evaluate_listening_conversation(history: list) -> dict:
     """
-    Final evaluation of the entire listening conversation.
+    Evaluates a full multi-turn conversation.
+    Returns composite scores and feedback.
     """
     prompt = f"""
-You are a friendly English evaluator. Evaluate this conversation between a student and an AI tutor 'Sam'.
-Look for:
-1. Did the student understand Sam's questions?
-2. Did they respond relevantly?
-3. Grammar and vocabulary for a Class 7 student.
-4. Provide constructive feedback on what they did well and ONE specific tip for improvement.
+You are an English evaluator. Review this spoken conversation between a 12-year-old student and an AI tutor.
 
 Conversation history:
 {json.dumps(history, indent=2)}
 
 Respond ONLY with valid JSON:
 {{
+  "overall_score": <0-100>,
   "language_score": <0-100>,
   "relevance_score": <0-100>,
-  "feedback": "<constructive feedback for improvement, max 25 words>",
-  "overall_score": <0-100>
+  "feedback": "<one short constructive sentence max 20 words>"
 }}
 """
     res = model.generate_content(prompt)
-    return _safe_parse(res.text, {"language_score": 75, "relevance_score": 75, "feedback": "Great chatting with you! You did well.", "overall_score": 75})
+    return _safe_parse(res.text, {"overall_score": 70, "language_score": 70, "relevance_score": 70, "feedback": "Good effort!"})
+
+
+# ── Conversational Writing ────────────────────────────────────────────────────
+
+def generate_writing_chat_response(history: list, image_description: str = None) -> dict:
+    """
+    Generates the next AI response in a conversational writing assessment.
+    Returns: {"response": str, "is_finished": bool}
+    """
+    image_description_note = f"\nThe image being discussed shows: {image_description}" if image_description else ""
+    
+    prompt = f"""
+You are Quto, a friendly and observant AI tutor for kids (age 12). 
+You are conducting a writing assessment about an image.
+{image_description_note}
+
+Rules for your response:
+1. React warmly and naturally to the student's last message.
+2. **Gently Correct**: If the student made a spelling or grammar mistake (e.g., "ballon" instead of "balloon"), correct it naturally in your response without being harsh. For example: "That's a great sentence! Yes, the red balloon (with two 'o's!) is very bright."
+3. **Appreciate**: If they described something accurately, celebrate it!
+4. **Follow-up**: If they haven't finished the task (usually after the 1st response), ask ONE simple follow-up question about the image details (e.g., the weather, the color of the balloon, the house, or the trees).
+5. Keep your response short (15-30 words).
+6. Use 1 emoji.
+
+Ending rules:
+- Count the number of 'user' messages in the 'Conversation history' above.
+- If there is ONLY 1 'user' message, you MUST set 'is_finished' to false and ask a follow-up question.
+- If there are 2 or more 'user' messages, set 'is_finished' to true and say a sweet goodbye.
+- You must be VERY strict about this count.
+
+Conversation history:
+{json.dumps(history, indent=2)}
+
+Respond ONLY with valid JSON:
+{{
+  "response": "<Your response here>",
+  "is_finished": <true or false>
+}}
+"""
+    res = model.generate_content(prompt)
+    fallback = {"response": "That sounds great! Keep writing! ✍️", "is_finished": False}
+    return _safe_parse(res.text, fallback)
+
+
+def evaluate_writing_conversation(history: list, image_description: str = None) -> dict:
+    """
+    Final evaluation of a writing conversation.
+    """
+    image_note = f"\nThe image shows: {image_description}" if image_description else ""
+    
+    prompt = f"""
+You are Quto, a friendly and encouraging AI tutor for kids (age 12). 
+Review this writing conversation about an image.
+{image_note}
+
+Evaluate:
+1. Did the student describe the image accurately?
+2. Grammar, punctuation (like capitalizing 'I' and full stops), and vocabulary.
+3. Sentence structure for a Class 7 student.
+
+Respond ONLY with valid JSON:
+{{
+  "language_score": <0-100>,
+  "relevance_score": <0-100>,
+  "feedback": "A very warm, encouraging sentence for a 12-year-old student from Quto the AI tutor. Praise their effort and give one small, friendly tip for next time.",
+  "overall_score": <0-100>
+}}
+
+Conversation history:
+{json.dumps(history, indent=2)}
+"""
+    res = model.generate_content(prompt)
+    return _safe_parse(res.text, {"language_score": 70, "relevance_score": 70, "feedback": "Nice job describing the sketch!", "overall_score": 70})

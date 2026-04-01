@@ -141,6 +141,8 @@ async def answer(
             "ai_response": ai_message,
             "accuracy": parsed["accuracy"],
             "fluency": parsed["fluency"],
+            "completeness": parsed["completeness"],
+            "pronunciation": parsed["pronunciation"],
             "finished": is_finished,
             "score": 0 # Not a final score yet
         }
@@ -149,7 +151,12 @@ async def answer(
 
         # Update chat history and turn metrics in DB
         metrics = json.loads(session["turn_metrics"] or "[]")
-        metrics.append({"accuracy": parsed["accuracy"], "fluency": parsed["fluency"]})
+        metrics.append({
+            "accuracy": parsed["accuracy"], 
+            "fluency": parsed["fluency"],
+            "completeness": parsed["completeness"],
+            "pronunciation": parsed["pronunciation"]
+        })
 
         cursor.execute("UPDATE sessions SET chat_history=?, turn_metrics=? WHERE id=?", 
                        (json.dumps(history), json.dumps(metrics), session_id))
@@ -169,6 +176,8 @@ async def answer(
             # Finalize this conversational question
             avg_acc = sum(m["accuracy"] for m in metrics) / len(metrics) if metrics else 0
             avg_flu = sum(m["fluency"] for m in metrics) / len(metrics) if metrics else 0
+            avg_comp = sum(m["completeness"] for m in metrics) / len(metrics) if metrics else 0
+            avg_pron = sum(m["pronunciation"] for m in metrics) / len(metrics) if metrics else 0
 
             eval_result = evaluate_listening_conversation(history)
             result = {
@@ -178,6 +187,8 @@ async def answer(
                 "relevance_score": eval_result["relevance_score"],
                 "avg_accuracy": round(avg_acc, 1),
                 "avg_fluency": round(avg_flu, 1),
+                "avg_completeness": round(avg_comp, 1),
+                "avg_pronunciation": round(avg_pron, 1),
                 "spoken": spoken,
                 "history": history
             }
@@ -201,16 +212,37 @@ async def answer(
         result = evaluate(question, parsed_list)
 
     else:
-        # mcq, tap_wrong_word, sentence_build, open_text, rewrite
-        result = evaluate(question, answer or "")
+        # Check if it was a conversational turn
+        history = json.loads(session["chat_history"] or "[]")
+        
+        # If it was a writing conversation, initialize history with initial_message if empty
+        if qtype == "conversational_writing" and not history:
+             history.append({"role": "model", "content": question.get("initial_message", question["question"])})
 
-    # ── Persist ───────────────────────────────────────────────────────────────
+        result = evaluate(question, answer or "", conversation_history=history)
+        
+        # If is_turn_based, return early!
+        if result.get("is_turn_based"):
+            new_history = result.get("conversation_history", history)
+            cursor.execute("UPDATE sessions SET chat_history=? WHERE id=?", (json.dumps(new_history), session_id))
+            conn.commit()
+            conn.close()
+            return {
+                "done": False,
+                "result": result,
+                "chat_response": result["chat_response"],
+                "is_turn_based": True,
+                "progress": {"current": current_idx_within_indices, "total": len(indices)}
+            }
+
+    # ── Persist (Final) ───────────────────────────────────────────────────────
     answers.append(result)
     scores.append(result["score"])
     next_idx_within_indices = current_idx_within_indices + 1
 
+    # Clear chat history for next question
     cursor.execute(
-        "UPDATE sessions SET current_question=?, answers=?, scores=? WHERE id=?",
+        "UPDATE sessions SET current_question=?, answers=?, scores=?, chat_history='[]' WHERE id=?",
         (next_idx_within_indices, json.dumps(answers), json.dumps(scores), session_id),
     )
     conn.commit()
@@ -268,4 +300,4 @@ def _safe_question(q: dict, name: str = "") -> dict:
         q_copy["question"] = msg
         q_copy["audio_script"] = msg
         
-    return q_copy
+    return q_copy

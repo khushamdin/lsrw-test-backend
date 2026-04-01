@@ -8,11 +8,10 @@ Question types:
   rewrite        → rewrite an incorrect sentence correctly, scored by Gemini
   open_text      → write a creative / open-ended sentence, scored by Gemini
   speech         → speak a free-form answer, scored by Azure + Gemini
+  conversational_writing → chat-based writing with AI feedback and follow-ups
 """
 
 QUESTIONS = [
-
-    # ─── LISTENING ────────────────────────────────────────────────────────────
 
     # ─── LISTENING ────────────────────────────────────────────────────────────
 
@@ -115,29 +114,21 @@ QUESTIONS = [
     },
 
     # ─── WRITING ──────────────────────────────────────────────────────────────
-
+    
     {
         "id": 10,
         "section": "writing",
-        "type": "fill_blank",
-        "question": "Fill the blank: \"She ___ the chest open slowly.\"",
-        "blanks": 1,
-        "options": ["Opened", "Opens", "Opening"],
-        "answer": ["opened"],
-        "feedback_wrong": "Past tense needed here — 'opened' ✍️"
-    },
-
-    {
-        "id": 11,
-        "section": "writing",
-        "type": "open_text",
-        "question": "In ONE sentence, describe what you think is inside the chest.",
-        "hint": "Use your imagination! Any creative, grammatically correct sentence works.",
+        "type": "conversational_writing",
+        "question": "Describe this image in 1-2 sentences:",
+        "image": "kid-sketch.png",
+        "image_description": "The image is a drawing by a child. It shows a kid wearing a blue colored t-shirt with a scarf holding a bright balloon, standing near a house and a road. There is a sun, some trees, and clouds in the background. There are flowers in front of the house as well.",
+        "initial_message": "Hey! Look at this cool drawing! Can you describe what you see in 1-2 sentences?",
+        "hint": "What do you see in the sketch? Maybe describe the kid, the house, or the weather!",
         "feedback_wrong": None
     },
 
     {
-        "id": 12,
+        "id": 11,
         "section": "writing",
         "type": "sentence_build",
         "question": "Build the sentence — tap words in the correct order:",
@@ -147,7 +138,7 @@ QUESTIONS = [
     },
 
     {
-        "id": 13,
+        "id": 12,
         "section": "writing",
         "type": "mcq",
         "question": "The scroll uses picture-words (🌊🌲🏔️). What does this mean?",
@@ -162,12 +153,24 @@ QUESTIONS = [
     },
 
     {
-        "id": 14,
+        "id": 13,
         "section": "writing",
         "type": "rewrite",
         "question": "Rewrite this sentence correctly: \"Sam tell Meera to be careful.\"",
         "correct_version": "Sam told Meera to be careful.",
         "feedback_wrong": None   # Gemini will evaluate
+    },
+    
+  
+    {
+        "id": 14,
+        "section": "writing",
+        "type": "fill_blank",
+        "question": "Fill the blank: \"She ___ the chest open slowly.\"",
+        "blanks": 1,
+        "options": ["Opened", "Opens", "Opening"],
+        "answer": ["opened"],
+        "feedback_wrong": "Past tense needed here — 'opened' ✍️"
     },
 
     # ─── SPEAKING ─────────────────────────────────────────────────────────────
