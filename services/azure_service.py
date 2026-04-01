@@ -2,6 +2,7 @@ import azure.cognitiveservices.speech as speechsdk
 import json
 import os
 import subprocess
+from typing import Optional
 from dotenv import load_dotenv
 
 # Load from .env if present
@@ -26,6 +27,34 @@ def convert_audio_to_wav(input_path: str) -> str:
     except subprocess.CalledProcessError as e:
         print(f"[Azure Service] Audio conversion failed: {e.stderr.decode()}")
         return input_path  # Fallback to original if conversion fails
+
+
+def transcribe_only(audio_path: str) -> str:
+    """
+    Rapidly transcribes audio to text (STT) without pronunciation assessment.
+    Used for initial relevance checks.
+    """
+    normalized_path = convert_audio_to_wav(audio_path)
+    try:
+        speech_config = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
+        audio_config = speechsdk.audio.AudioConfig(filename=normalized_path)
+        speech_recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
+
+        result = speech_recognizer.recognize_once_async().get()
+        
+        # Cleanup
+        del speech_recognizer
+        del audio_config
+        if normalized_path != audio_path and os.path.exists(normalized_path):
+            try: os.remove(normalized_path)
+            except: pass
+
+        if result.reason == speechsdk.ResultReason.RecognizedSpeech:
+            return result.text.strip()
+        return ""
+    except Exception as e:
+        print(f"[Azure Service] Transcription failed: {e}")
+        return ""
 
 
 def analyze_pronunciation(audio_path: str, reference_text: str = ""):

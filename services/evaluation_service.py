@@ -12,7 +12,7 @@ Question types and their scoring logic:
                    + Gemini relevance & language quality           → composite 0-100
 """
 
-from services.azure_service import analyze_pronunciation, parse_result
+from services.azure_service import analyze_pronunciation, parse_result, transcribe_only
 from services.gemini_service import (
     evaluate_speech_answer,
     evaluate_open_text,
@@ -127,31 +127,54 @@ def evaluate(question: dict, input_data) -> dict:
     elif qtype == "speech":
         audio_path = input_data
 
-        # Step 1: Azure pronunciation analysis
-        azure_raw = analyze_pronunciation(audio_path, reference_text="")
-        parsed = parse_result(azure_raw)
+        # Step 1: Transcribe FIRST (STT) for relevance check (per user request)
+        spoken = transcribe_only(audio_path)
+        if not spoken:
+            return {
+                "score": 0,
+                "spoken": "[Silence or unreadable]",
+                "feedback": "I couldn't hear you clearly. Could you try speaking again?",
+            }
 
-        spoken = parsed["spoken"]
-        accuracy = parsed["accuracy"]
-        fluency = parsed["fluency"]
-
-        # Step 2: Gemini relevance + language quality check
+        # Step 2: Gemini Relevance + Language Check
         forbidden = question.get("forbidden_words", None)
         gemini = evaluate_speech_answer(
             question=question["question"],
             spoken=spoken,
-            accuracy=accuracy,
-            fluency=fluency,
+            accuracy=0.0,  # Placeholder, will update if relevant
+            fluency=0.0,   # Placeholder
             forbidden_words=forbidden,
         )
 
-        # Step 3: Composite score
-        # 40% pronunciation accuracy, 20% fluency, 25% language quality, 15% relevance
+        relevance = gemini.get("relevance_score", 0)
+        
+        # Threshold: If it's not relevant (e.g. saying 'happy birthday' to beach question),
+        # don't bother with Azure pronunciation, just penalize.
+        if relevance < 40:
+             return {
+                "score": round(relevance * 0.5, 1),
+                "spoken": spoken,
+                "relevance_score": relevance,
+                "feedback": gemini["feedback"] + " (Wait, that doesn't seem to answer my question! 🤔)",
+                "is_irrelevant": True
+            }
+
+        # Step 3: Azure Pronunciation Analysis (Full)
+        # Using the corrected text from Gemini as reference for MUCH better accuracy
+        reference = gemini.get("corrected_sentence", spoken)
+        azure_raw = analyze_pronunciation(audio_path, reference_text=reference)
+        parsed = parse_result(azure_raw)
+
+        accuracy = parsed["accuracy"]
+        fluency = parsed["fluency"]
+
+        # Step 4: Composite Score
+        # Now 50% is pronunciation, 50% is content (language + relevance)
         composite = (
-            0.40 * accuracy
+            0.30 * accuracy
             + 0.20 * fluency
             + 0.25 * gemini["language_score"]
-            + 0.15 * gemini["relevance_score"]
+            + 0.25 * relevance
         )
 
         return {
@@ -160,8 +183,9 @@ def evaluate(question: dict, input_data) -> dict:
             "pronunciation_accuracy": round(accuracy, 1),
             "fluency": round(fluency, 1),
             "language_score": gemini["language_score"],
-            "relevance_score": gemini["relevance_score"],
+            "relevance_score": relevance,
             "feedback": gemini["feedback"],
+            "corrected_sentence": gemini.get("corrected_sentence", spoken)
         }
 
     # ── UNKNOWN TYPE ──────────────────────────────────────────────────────────

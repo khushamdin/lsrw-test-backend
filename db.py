@@ -16,9 +16,15 @@ def init_db():
         id TEXT PRIMARY KEY,
         current_question INTEGER,
         answers TEXT,
-        scores TEXT
+        scores TEXT,
+        question_indices TEXT
     )
     """)
+    # Add column if it doesn't exist (for existing DBs)
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN question_indices TEXT")
+    except:
+        pass # Column already exists
 
     conn.commit()
     conn.close()

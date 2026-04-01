@@ -26,21 +26,32 @@ def get_questions():
 
 
 @router.post("/start")
-def start():
-    """Create a new session and return the first question."""
+def start(section: Optional[str] = None):
+    """Create a new session and return the first question, optionally filtered by section."""
     session_id = str(uuid.uuid4())
+    
+    # Calculate indices based on section
+    if section:
+        indices = [i for i, q in enumerate(QUESTIONS) if q.get("section") == section]
+    else:
+        indices = list(range(len(QUESTIONS)))
+    
+    if not indices:
+        return {"error": f"No questions found for section '{section}'"}, 404
 
+    indices_json = json.dumps(indices)
+    
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO sessions (id, current_question, answers, scores) VALUES (?, ?, ?, ?)",
-        (session_id, 0, "[]", "[]"),
+        "INSERT INTO sessions (id, current_question, answers, scores, question_indices) VALUES (?, ?, ?, ?, ?)",
+        (session_id, 0, "[]", "[]", indices_json),
     )
     conn.commit()
     conn.close()
 
-    first_q = _safe_question(QUESTIONS[0])
-    return {"session_id": session_id, "question": first_q, "total": len(QUESTIONS)}
+    first_q = _safe_question(QUESTIONS[indices[0]])
+    return {"session_id": session_id, "question": first_q, "total": len(indices)}
 
 
 @router.post("/answer")
@@ -70,8 +81,19 @@ async def answer(
         conn.close()
         return {"error": "Session not found"}, 404
 
-    current_q = session["current_question"]
-    question = QUESTIONS[current_q]
+    current_idx_within_indices = session["current_question"]
+    indices = json.loads(session["question_indices"] or "[]")
+    
+    # If no indices were stored (old session), assume all questions
+    if not indices:
+        indices = list(range(len(QUESTIONS)))
+
+    if current_idx_within_indices >= len(indices):
+        conn.close()
+        return {"error": "All questions in this quiz session are already answered."}, 400
+
+    actual_q_index = indices[current_idx_within_indices]
+    question = QUESTIONS[actual_q_index]
     answers = json.loads(session["answers"])
     scores = json.loads(session["scores"])
 
@@ -103,17 +125,17 @@ async def answer(
     # ── Persist ───────────────────────────────────────────────────────────────
     answers.append(result)
     scores.append(result["score"])
-    next_q = current_q + 1
+    next_idx_within_indices = current_idx_within_indices + 1
 
     cursor.execute(
         "UPDATE sessions SET current_question=?, answers=?, scores=? WHERE id=?",
-        (next_q, json.dumps(answers), json.dumps(scores), session_id),
+        (next_idx_within_indices, json.dumps(answers), json.dumps(scores), session_id),
     )
     conn.commit()
     conn.close()
 
     # ── Response ──────────────────────────────────────────────────────────────
-    if next_q >= len(QUESTIONS):
+    if next_idx_within_indices >= len(indices):
         final_score = round(sum(scores) / len(scores), 1)
         return {
             "done": True,
@@ -121,11 +143,12 @@ async def answer(
             "result": result,
         }
 
+    next_actual_q_index = indices[next_idx_within_indices]
     return {
         "done": False,
         "result": result,
-        "next_question": _safe_question(QUESTIONS[next_q]),
-        "progress": {"current": next_q, "total": len(QUESTIONS)},
+        "next_question": _safe_question(QUESTIONS[next_actual_q_index]),
+        "progress": {"current": next_idx_within_indices, "total": len(indices)},
     }
 
 
